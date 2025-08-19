@@ -1,6 +1,5 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
-import arcjet, { detectBot, shield } from "@arcjet/next";
-import { NextResponse } from "next/server";
+import { NextResponse, NextRequest } from "next/server";
+import { getCurrentUser } from "@/utils/auth";
 
 export const config = {
     matcher: [
@@ -11,57 +10,68 @@ export const config = {
     ],
 };
 
-const aj = arcjet({
-    key: process.env.ARCJET_KEY!, // Get your site key from https://app.arcjet.com
-    rules: [
-        // shield protects agains common attacks such as SQL injection, XSS, etc
-        shield(
-            { mode: "LIVE" } // will block requests. Use "DRY_RUN" to log only
-        ),
-
-        detectBot({
-            mode: "LIVE", // will block requests. Use "DRY_RUN" to log only
-            // Block all bots except the following
-            allow: [
-                "CATEGORY:SEARCH_ENGINE",
-                "CURL",
-                "VERCEL_MONITOR_PREVIEW", // Vercel preview bot
-                // Google, Bing, etc
-                // Uncomment to allow these other common bot categories
-                // See the full list at https://arcjet.com/bot-list
-                //"CATEGORY:MONITOR", // Uptime monitoring services
-                //"CATEGORY:PREVIEW", // Link previews e.g. Slack, Discord
-            ],
-        }),
-    ],
-});
+// Define route matchers
+function createRouteMatcher(patterns: string[]) {
+    return (request: NextRequest) => {
+        const { pathname } = request.nextUrl;
+        return patterns.some((pattern) => {
+            const regex = new RegExp(pattern.replace(/\*/g, ".*"));
+            return regex.test(pathname);
+        });
+    };
+}
 
 // define public routes
 const isPublicRoute = createRouteMatcher([
     "/",
-    "/sign-in(.*)",
-    "/sign-up(.*)",
+    "/login",
+    "/register",
+    "/api/auth/(.*)",
     "/api/categories(.*)",
+    "/categories(.*)",
+    "/stats(.*)",
+    "/leaderboard(.*)",
+    "/quiz(.*)",
+    "/results(.*)",
+    "/tasks(.*)",
 ]);
 
-export default clerkMiddleware(async (auth, req) => {
-    // run arcjet middleware first
-    const decsion = await aj.protect(req);
+// define admin routes
+const isAdminRoute = createRouteMatcher(["/admin(.*)", "/api/admin(.*)"]);
 
-    if (decsion.isDenied()) {
-        return NextResponse.json(
-            { error: "Forbidden", reason: decsion.reason },
-            { status: 403 }
-        );
-    }
+// define teacher routes
+const isTeacherRoute = createRouteMatcher(["/teacher(.*)", "/api/teacher(.*)"]);
 
-    // skip authenticaion for public routes
+export default async function middleware(req: NextRequest) {
+    // skip authentication for public routes
     if (isPublicRoute(req)) {
         return NextResponse.next();
     }
 
-    // authenticate user and protect non-public routes
-    await auth.protect();
+    // check authentication for protected routes
+    try {
+        const user = await getCurrentUser(req);
 
-    return NextResponse.next();
-});
+        // If not authenticated, redirect to login
+        if (!user) {
+            return NextResponse.redirect(new URL("/login", req.url));
+        }
+
+        // Check role-based access for protected routes
+        if (isAdminRoute(req)) {
+            if (user.role !== "admin") {
+                return NextResponse.redirect(new URL("/", req.url));
+            }
+        } else if (isTeacherRoute(req)) {
+            if (user.role !== "teacher" && user.role !== "admin") {
+                return NextResponse.redirect(new URL("/", req.url));
+            }
+        }
+
+        return NextResponse.next();
+    } catch (error) {
+        console.log("Error in middleware:", error);
+        // If there's an error, redirect to login
+        return NextResponse.redirect(new URL("/login", req.url));
+    }
+}

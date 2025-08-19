@@ -1,38 +1,67 @@
-import { auth } from "@clerk/nextjs/server";
-import { error } from "console";
 import React from "react";
 import prisma from "@/utils/connect";
 import UserStats from "@/components/UserStats";
+import { getCurrentUser } from "@/utils/auth";
+import { cookies } from "next/headers";
 
 async function page() {
-  const { userId } = await auth();
+    let user = null;
+    try {
+        // Create a mock request object with cookies for server-side auth
+        const cookieStore = await cookies();
+        const authToken = cookieStore.get("auth-token");
 
-  if (!userId) {
-    return { error: "You need to be logged in to view this page" };
-  }
+        if (authToken) {
+            const mockRequest = {
+                cookies: {
+                    get: (name: string) => ({ value: authToken.value }),
+                },
+            } as any;
+            user = await getCurrentUser(mockRequest);
+        }
+    } catch (error) {
+        console.log("Auth not available, showing guest stats");
+    }
 
-  // get user data --> populate the categoryStats using the category
+    if (!user) {
+        return (
+            <div className="max-w-7xl mx-auto px-6 lg:px-8 py-8 text-center">
+                <h1 className="text-2xl">Please sign in to view your stats</h1>
+                <p className="mt-2 text-gray-600">
+                    Sign in to track your quiz progress and performance
+                </p>
+            </div>
+        );
+    }
 
-  const user = await prisma.user.findUnique({
-    where: {
-      clerkId: userId,
-    },
-    include: {
-      categoryStats: {
-        include: {
-          category: true, // populate the category
+    // Get user data with quiz submissions - user is already fetched above
+    const userWithSubmissions = await prisma.user.findUnique({
+        where: {
+            id: user.id,
         },
-      },
-    },
-  });
+        include: {
+            submissions: {
+                include: {
+                    quiz: {
+                        select: {
+                            title: true,
+                        },
+                    },
+                },
+                orderBy: {
+                    submittedAt: "desc",
+                },
+            },
+        },
+    });
 
-  console.log("User stats:", user);
+    console.log("User stats:", userWithSubmissions);
 
-  return (
-    <div>
-      <UserStats userStats={user} />
-    </div>
-  );
+    return (
+        <div className="max-w-7xl mx-auto px-6 lg:px-8 py-8">
+            <UserStats userStats={userWithSubmissions} />
+        </div>
+    );
 }
 
 export default page;

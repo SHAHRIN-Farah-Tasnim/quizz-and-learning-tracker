@@ -1,69 +1,53 @@
-import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/utils/connect";
+import { getCurrentUser } from "@/utils/auth";
 
 export async function POST(req: NextRequest) {
-    const { userId: clerkId } = await auth();
-    const { categoryId } = await req.json();
-
-    if (!clerkId) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     try {
-        const user = await prisma.user.findUnique({
-            where: { clerkId },
-        });
+        const user = await getCurrentUser(req);
+        const { quizId } = await req.json();
 
         if (!user) {
             return NextResponse.json(
-                { error: "User not found" },
+                { error: "Unauthorized" },
+                { status: 401 }
+            );
+        }
+
+        // Only students can start quizzes (assignment requirement removed)
+        if (user.role !== "student") {
+            return NextResponse.json(
+                { error: "Only students are allowed to start quizzes" },
+                { status: 403 }
+            );
+        }
+
+        if (!quizId) {
+            return NextResponse.json(
+                { error: "Quiz ID is required" },
+                { status: 400 }
+            );
+        }
+
+        // Verify quiz exists and is active
+        const quiz = await prisma.quiz.findFirst({
+            where: { id: quizId, isActive: true },
+        });
+
+        if (!quiz) {
+            return NextResponse.json(
+                { error: "Quiz not found or inactive" },
                 { status: 404 }
             );
         }
 
-        const userId = user.id;
+        // Assignment linkage removed; simply acknowledge the start
 
-        // find or create a categoryStat entry
-
-        let stat = await prisma.categoryStat.findUnique({
-            where: {
-                userId_categoryId: {
-                    categoryId,
-                    userId,
-                },
-            },
-        });
-
-        if (!stat) {
-            stat = await prisma.categoryStat.create({
-                data: {
-                    userId,
-                    categoryId,
-                    attempts: 1,
-                    lastAttempt: new Date(),
-                },
-            });
-        } else {
-            await prisma.categoryStat.update({
-                where: {
-                    userId_categoryId: {
-                        userId,
-                        categoryId,
-                    },
-                },
-                data: {
-                    attempts: stat.attempts + 1,
-                    lastAttempt: new Date(),
-                },
-            });
-        }
-
-        return NextResponse.json(stat);
+        return NextResponse.json({ message: "Quiz started", quizId });
     } catch (error) {
-        console.log("Error starting quiz: ", error);
+        console.error("Error starting quiz:", error);
         return NextResponse.json(
-            { error: "Error starting quiz" },
+            { error: "There was an error starting the quiz" },
             { status: 500 }
         );
     }
